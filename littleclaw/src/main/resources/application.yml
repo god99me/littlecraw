@@ -1,0 +1,24 @@
+server:
+  port: 8080
+  shutdown: graceful
+spring:
+  application:
+    name: littleclaw
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  codec:
+    max-in-memory-size: 1MB
+littleclaw:
+  system-prompt: |
+    You are LittleClaw, a fast assistant that can discover and apply local skills.
+    Keep responses concise, useful, and grounded in the provided skill context.
+  skills:
+    path: ./skills
+  stream:
+    token-delay-ms: 15
+  limits:
+    max-messages: 40
+    max-input-chars: 16000
+reactor:
+  netty:
+    ioWorkerCount: 4
