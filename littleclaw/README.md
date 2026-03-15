@@ -15,16 +15,25 @@
 - SSE streaming endpoint: `POST /v1/chat/completions/stream`
 - Local skill loading from `./skills` or bundled examples
 - Skill matching based on trigger words and metadata
-- Input guardrails for request size and message count
+- Context assembly stage for skills, RAG snippets, MCP tool inventory, and channel metadata
+- Local filesystem RAG over docs, memory, and skills as a safe starter retriever
+- OpenAI-compatible reactive provider adapter behind `ChatProvider`
+- Per-tenant rate limiting plus global and tenant stream quotas
+- Regenerate, interrupt, and conversation continuation with stored turn state
 - Simple health endpoint and skill inspection endpoint
 
 ## Project structure
 
 ```text
 src/main/java/ai/littleclaw
+  admission/ traffic admission and quotas
   api/       HTTP controllers and exception mapping
-  chat/      request models, SSE service, pluggable engine
+  channel/   normalized multi-channel capability model
+  chat/      request models, orchestration, SSE service, pluggable engine
   config/    typed config
+  context/   provider-facing context assembly
+  mcp/       MCP registry and future tool client boundary
+  rag/       retrieval services and snippet models
   skill/     skill loader and registry
 ```
 
@@ -96,10 +105,21 @@ java -server \
   -jar target/littleclaw-0.1.0-SNAPSHOT.jar
 ```
 
+## More production notes
+
+- provider contract: `docs/provider-adapters.md`
+- request limits and edge policy: `docs/request-guardrails.md`
+- traffic shaping and stream quotas: `docs/traffic-control.md`
+- context/RAG/MCP/channel plan: `docs/context-rag-mcp-channels.md`
+- regenerate and rendering: `docs/regenerate-and-rendering.md`
+- borrowing notes from OpenClaw-like designs: `docs/borrowing-notes.md`
+- system design: `docs/architecture.md`
+- benchmark phases: `docs/performance.md`
+
 ## Suggested next steps
 
-- Add an OpenAI/Claude/vLLM adapter that implements `ChatEngine`
-- Add Redis for session memory and rate limiting
-- Add Micrometer + Prometheus for p95/p99 SSE latency
+- Add an OpenAI-compatible reactive provider adapter behind `ChatProvider`
+- Add Redis for session memory, concurrency tracking, and rate limiting
+- Add Micrometer + Prometheus for p95/p99 SSE latency and active streams
 - Add authentication and tenant isolation
 - Add a benchmark suite with k6 or Gatling
