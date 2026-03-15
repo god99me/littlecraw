@@ -11,6 +11,7 @@ import ai.littleclaw.config.LittleClawProperties;
 import ai.littleclaw.context.ContextAssembler;
 import ai.littleclaw.mcp.McpRegistry;
 import ai.littleclaw.observability.ChatMetrics;
+import ai.littleclaw.config.TenantPolicyResolver;
 import ai.littleclaw.provider.StubChatProvider;
 import ai.littleclaw.rag.LocalFilesystemRagService;
 import ai.littleclaw.render.DefaultChannelResponseRenderer;
@@ -46,17 +47,19 @@ class ChatControllerTest {
         SkillRegistry registry = new SkillRegistry(new SkillLoader(), properties);
         registry.refresh();
         ChatMetrics metrics = new ChatMetrics(new SimpleMeterRegistry());
+        TenantPolicyResolver tenantPolicyResolver = new TenantPolicyResolver(properties);
         activeRequestRegistry = new ActiveRequestRegistry();
         ChatService chatService = new ChatService(
                 registry,
                 new HeuristicChatEngine(new StubChatProvider(properties)),
                 properties,
-                new InMemoryAdmissionController(properties, metrics),
+                new InMemoryAdmissionController(properties, tenantPolicyResolver, metrics),
                 new ContextAssembler(new LocalFilesystemRagService(properties), new McpRegistry(properties), new ChannelRegistry()),
                 new CommandRouter(new CommandInterpreter(), activeRequestRegistry),
                 activeRequestRegistry,
                 new InMemoryConversationStore(new ConversationTranscriptPolicy(properties), properties, metrics),
                 new DefaultChannelResponseRenderer(new RenderPolicyRegistry()),
+                tenantPolicyResolver,
                 metrics
         );
         client = WebTestClient.bindToController(new ChatController(chatService, registry, activeRequestRegistry))
@@ -89,7 +92,8 @@ class ChatControllerTest {
                 .jsonPath("$.requestId").isEqualTo("req-api-1")
                 .jsonPath("$.conversationId").isEqualTo("conv-api-1")
                 .jsonPath("$.finishReason").isEqualTo("completed")
-                .jsonPath("$.metadata.protocolVersion").isEqualTo("2026-03-14.v4")
+                .jsonPath("$.status").isEqualTo("ok")
+                .jsonPath("$.metadata.protocolVersion").isEqualTo("2026-03-15.v5")
                 .jsonPath("$.metadata.renderedFor").isEqualTo("feishu");
     }
 
@@ -119,7 +123,8 @@ class ChatControllerTest {
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody()
-                .jsonPath("$.finishReason").isEqualTo("completed");
+                .jsonPath("$.finishReason").isEqualTo("completed")
+                .jsonPath("$.status").isEqualTo("ok");
     }
 
     @Test

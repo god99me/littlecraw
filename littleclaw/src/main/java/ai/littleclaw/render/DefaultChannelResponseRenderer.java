@@ -35,6 +35,8 @@ public class DefaultChannelResponseRenderer implements ChannelResponseRenderer {
                 response.conversationId(),
                 response.parentMessageId(),
                 response.finishReason(),
+                response.status(),
+                response.errorCode(),
                 metadata
         );
     }
@@ -57,6 +59,8 @@ public class DefaultChannelResponseRenderer implements ChannelResponseRenderer {
                 chunk.conversationId(),
                 chunk.parentMessageId(),
                 chunk.finishReason(),
+                chunk.status(),
+                chunk.errorCode(),
                 metadata
         );
     }

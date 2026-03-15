@@ -1,6 +1,7 @@
 package ai.littleclaw.admission;
 
 import ai.littleclaw.config.LittleClawProperties;
+import ai.littleclaw.config.TenantPolicyResolver;
 import ai.littleclaw.observability.ChatMetrics;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -71,11 +72,13 @@ public class RedisAdmissionController implements AdmissionController {
 
     private final ReactiveStringRedisTemplate redis;
     private final LittleClawProperties properties;
+    private final TenantPolicyResolver tenantPolicyResolver;
     private final ChatMetrics metrics;
 
-    public RedisAdmissionController(ReactiveStringRedisTemplate redis, LittleClawProperties properties, ChatMetrics metrics) {
+    public RedisAdmissionController(ReactiveStringRedisTemplate redis, LittleClawProperties properties, TenantPolicyResolver tenantPolicyResolver, ChatMetrics metrics) {
         this.redis = redis;
         this.properties = properties;
+        this.tenantPolicyResolver = tenantPolicyResolver;
         this.metrics = metrics;
     }
 
@@ -83,6 +86,7 @@ public class RedisAdmissionController implements AdmissionController {
     public Mono<AdmissionLease> acquire(AdmissionRequest request) {
         String prefix = properties.getAdmission().getRedisPrefix();
         String tenantId = request.tenantId();
+        TenantPolicyResolver.TenantPolicy tenantPolicy = tenantPolicyResolver.resolve(tenantId);
         String rateKey = prefix + ":rate:" + tenantId;
         String globalKey = prefix + ":stream:global";
         String tenantKey = prefix + ":stream:tenant:" + tenantId;
@@ -90,25 +94,25 @@ public class RedisAdmissionController implements AdmissionController {
                         ACQUIRE_SCRIPT,
                         List.of(rateKey, globalKey, tenantKey),
                         String.valueOf(properties.getAdmission().getRateWindowSeconds()),
-                        String.valueOf(properties.getAdmission().getMaxRequestsPerWindow()),
+                        String.valueOf(tenantPolicy.maxRequestsPerWindow()),
                         request.streaming() ? "1" : "0",
                         String.valueOf(properties.getAdmission().getMaxActiveStreams()),
-                        String.valueOf(properties.getAdmission().getMaxActiveStreamsPerTenant())
+                        String.valueOf(tenantPolicy.maxActiveStreamsPerTenant())
                 )
                 .next()
-                .switchIfEmpty(Mono.error(new AdmissionRejectedException("Admission controller returned no result.")))
+                .switchIfEmpty(Mono.error(new AdmissionRejectedException("admission_controller_empty", "Admission controller returned no result.")))
                 .flatMap(code -> switch (code.intValue()) {
                     case -1 -> {
                         metrics.recordAdmission("rate_limited", request.streaming());
-                        yield Mono.error(new AdmissionRejectedException("Tenant rate limit exceeded."));
+                        yield Mono.error(new AdmissionRejectedException("tenant_rate_limited", "Tenant rate limit exceeded."));
                     }
                     case -2 -> {
                         metrics.recordAdmission("global_stream_rejected", true);
-                        yield Mono.error(new AdmissionRejectedException("Too many active streams."));
+                        yield Mono.error(new AdmissionRejectedException("global_stream_limit_exceeded", "Too many active streams."));
                     }
                     case -3 -> {
                         metrics.recordAdmission("tenant_stream_rejected", true);
-                        yield Mono.error(new AdmissionRejectedException("Tenant active stream quota exceeded."));
+                        yield Mono.error(new AdmissionRejectedException("tenant_stream_limit_exceeded", "Tenant active stream quota exceeded."));
                     }
                     case 1 -> {
                         metrics.recordAdmission("accepted", false);
@@ -118,7 +122,7 @@ public class RedisAdmissionController implements AdmissionController {
                         metrics.recordAdmission("accepted", true);
                         yield Mono.just(buildStreamLease(globalKey, tenantKey));
                     }
-                    default -> Mono.error(new AdmissionRejectedException("Unknown admission result: " + code));
+                    default -> Mono.error(new AdmissionRejectedException("unknown_admission_result", "Unknown admission result: " + code));
                 });
     }
 

@@ -9,6 +9,7 @@ import ai.littleclaw.command.CommandRouter;
 import ai.littleclaw.config.LittleClawProperties;
 import ai.littleclaw.context.ContextAssembler;
 import ai.littleclaw.mcp.McpRegistry;
+import ai.littleclaw.config.TenantPolicyResolver;
 import ai.littleclaw.observability.ChatMetrics;
 import ai.littleclaw.provider.StubChatProvider;
 import ai.littleclaw.rag.LocalFilesystemRagService;
@@ -35,10 +36,11 @@ class ChatServiceTest {
     private ChatService chatService;
     private RequestContext requestContext;
     private ActiveRequestRegistry activeRequestRegistry;
+    private LittleClawProperties properties;
 
     @BeforeEach
     void setUp() {
-        LittleClawProperties properties = new LittleClawProperties();
+        properties = new LittleClawProperties();
         properties.setSystemPrompt("test");
         properties.getSkills().setPath("src/main/resources/skills");
         properties.getStream().setTokenDelayMs(0);
@@ -49,17 +51,19 @@ class ChatServiceTest {
         SkillRegistry registry = new SkillRegistry(new SkillLoader(), properties);
         registry.refresh();
         ChatMetrics metrics = new ChatMetrics(new SimpleMeterRegistry());
+        TenantPolicyResolver tenantPolicyResolver = new TenantPolicyResolver(properties);
         activeRequestRegistry = new ActiveRequestRegistry();
         chatService = new ChatService(
                 registry,
                 new HeuristicChatEngine(new StubChatProvider(properties)),
                 properties,
-                new InMemoryAdmissionController(properties, metrics),
+                new InMemoryAdmissionController(properties, tenantPolicyResolver, metrics),
                 new ContextAssembler(new LocalFilesystemRagService(properties), new McpRegistry(properties), new ChannelRegistry()),
                 new CommandRouter(new CommandInterpreter(), activeRequestRegistry),
                 activeRequestRegistry,
                 new InMemoryConversationStore(new ConversationTranscriptPolicy(properties), properties, metrics),
                 new DefaultChannelResponseRenderer(new RenderPolicyRegistry()),
+                tenantPolicyResolver,
                 metrics
         );
         requestContext = new RequestContext("tenant-a", "ctx-req-1", "api");
@@ -87,6 +91,8 @@ class ChatServiceTest {
                     org.assertj.core.api.Assertions.assertThat(response.requestId()).isEqualTo("req-1");
                     org.assertj.core.api.Assertions.assertThat(response.conversationId()).isEqualTo("conv-1");
                     org.assertj.core.api.Assertions.assertThat(response.finishReason()).isEqualTo("completed");
+                    org.assertj.core.api.Assertions.assertThat(response.status()).isEqualTo("ok");
+                    org.assertj.core.api.Assertions.assertThat(response.errorCode()).isNull();
                 })
                 .verifyComplete();
     }
@@ -189,7 +195,10 @@ class ChatServiceTest {
                 null
         );
         StepVerifier.create(chatService.complete(request, requestContext))
-                .assertNext(response -> org.assertj.core.api.Assertions.assertThat(response.content()).contains("Built-in commands"))
+                .assertNext(response -> {
+                    org.assertj.core.api.Assertions.assertThat(response.content()).contains("Built-in commands");
+                    org.assertj.core.api.Assertions.assertThat(response.status()).isEqualTo("ok");
+                })
                 .verifyComplete();
     }
 
@@ -226,6 +235,7 @@ class ChatServiceTest {
         StepVerifier.create(chatService.complete(stop, requestContext))
                 .assertNext(response -> {
                     org.assertj.core.api.Assertions.assertThat(response.finishReason()).isEqualTo("stopped");
+                    org.assertj.core.api.Assertions.assertThat(response.status()).isEqualTo("ok");
                     org.assertj.core.api.Assertions.assertThat(response.content()).contains("req-stop-source");
                 })
                 .verifyComplete();
@@ -344,5 +354,55 @@ class ChatServiceTest {
 
         org.assertj.core.api.Assertions.assertThat(secondResponse.metadata()).containsEntry("continuedConversation", true);
         org.assertj.core.api.Assertions.assertThat((Integer) secondResponse.metadata().get("messageCount")).isEqualTo(3);
+    }
+
+    @Test
+    void appliesTenantTokenLimitOverrides() {
+        LittleClawProperties.Auth.Client tenant = new LittleClawProperties.Auth.Client();
+        tenant.setTenantId("tenant-gold");
+        tenant.setApiKey("gold-key");
+        tenant.setMaxMaxTokens(64);
+        properties.getAuth().getClients().add(tenant);
+        RequestContext goldRequest = new RequestContext("tenant-gold", "req-gold-limit", "api");
+        ChatRequest request = new ChatRequest(
+                ChatAction.COMPLETE,
+                List.of(new ChatMessage("user", "Need Java code help")),
+                false,
+                128,
+                null,
+                null,
+                "conv-gold-1",
+                "req-gold-1",
+                null,
+                null,
+                null
+        );
+
+        assertThrows(ValidationException.class, () -> chatService.complete(request, goldRequest).block());
+    }
+
+    @Test
+    void exposesNotFoundRegenerateAsStructuredError() {
+        ChatRequest regenerate = new ChatRequest(
+                ChatAction.REGENERATE,
+                List.of(new ChatMessage("user", "重新生成")),
+                false,
+                null,
+                null,
+                null,
+                "conv-missing-regen",
+                "req-missing-regen",
+                null,
+                "missing-response-id",
+                null
+        );
+
+        StepVerifier.create(chatService.complete(regenerate, requestContext))
+                .assertNext(response -> {
+                    org.assertj.core.api.Assertions.assertThat(response.finishReason()).isEqualTo("not_found");
+                    org.assertj.core.api.Assertions.assertThat(response.status()).isEqualTo("error");
+                    org.assertj.core.api.Assertions.assertThat(response.errorCode()).isEqualTo("conversation_turn_not_found");
+                })
+                .verifyComplete();
     }
 }

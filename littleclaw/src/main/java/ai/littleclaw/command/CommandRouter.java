@@ -58,7 +58,7 @@ public class CommandRouter {
                     "ignored",
                     request.requestId(),
                     "No target request id was provided for stop.",
-                    Map.of("action", "stop")
+                    Map.of("action", "stop", "errorCode", "missing_interrupt_target")
             ));
         }
         activeRequestRegistry.cancel(targetRequestId);

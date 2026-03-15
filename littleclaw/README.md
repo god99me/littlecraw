@@ -23,6 +23,7 @@
 - Regenerate, interrupt, and conversation continuation with stored turn state
 - Conversation TTL + transcript trimming for safer long-running state growth
 - Prometheus-ready metrics and structured request logging
+- Stable response status/error codes plus tenant policy metadata for clients
 - Simple health endpoint, actuator health probes, and skill inspection endpoint
 
 ## Project structure

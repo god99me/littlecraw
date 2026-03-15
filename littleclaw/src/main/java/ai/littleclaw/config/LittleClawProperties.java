@@ -435,6 +435,10 @@ public class LittleClawProperties {
             private String apiKey = "replace-me";
 
             private String name = "";
+            private Integer maxRequestsPerWindow;
+            private Integer maxActiveStreams;
+            private Integer maxInputChars;
+            private Integer maxMaxTokens;
 
             public String getTenantId() {
                 return tenantId;
@@ -458,6 +462,38 @@ public class LittleClawProperties {
 
             public void setName(String name) {
                 this.name = name;
+            }
+
+            public Integer getMaxRequestsPerWindow() {
+                return maxRequestsPerWindow;
+            }
+
+            public void setMaxRequestsPerWindow(Integer maxRequestsPerWindow) {
+                this.maxRequestsPerWindow = maxRequestsPerWindow;
+            }
+
+            public Integer getMaxActiveStreams() {
+                return maxActiveStreams;
+            }
+
+            public void setMaxActiveStreams(Integer maxActiveStreams) {
+                this.maxActiveStreams = maxActiveStreams;
+            }
+
+            public Integer getMaxInputChars() {
+                return maxInputChars;
+            }
+
+            public void setMaxInputChars(Integer maxInputChars) {
+                this.maxInputChars = maxInputChars;
+            }
+
+            public Integer getMaxMaxTokens() {
+                return maxMaxTokens;
+            }
+
+            public void setMaxMaxTokens(Integer maxMaxTokens) {
+                this.maxMaxTokens = maxMaxTokens;
             }
         }
     }

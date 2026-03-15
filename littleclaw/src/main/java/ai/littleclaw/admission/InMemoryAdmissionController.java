@@ -1,6 +1,7 @@
 package ai.littleclaw.admission;
 
 import ai.littleclaw.config.LittleClawProperties;
+import ai.littleclaw.config.TenantPolicyResolver;
 import ai.littleclaw.observability.ChatMetrics;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -13,13 +14,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class InMemoryAdmissionController implements AdmissionController {
 
     private final LittleClawProperties properties;
+    private final TenantPolicyResolver tenantPolicyResolver;
     private final ChatMetrics metrics;
     private final AtomicInteger activeStreams = new AtomicInteger();
     private final Map<String, AtomicInteger> activeStreamsByTenant = new ConcurrentHashMap<>();
     private final Map<String, WindowCounter> requestCounters = new ConcurrentHashMap<>();
 
-    public InMemoryAdmissionController(LittleClawProperties properties, ChatMetrics metrics) {
+    public InMemoryAdmissionController(LittleClawProperties properties, TenantPolicyResolver tenantPolicyResolver, ChatMetrics metrics) {
         this.properties = properties;
+        this.tenantPolicyResolver = tenantPolicyResolver;
         this.metrics = metrics;
     }
 
@@ -29,10 +32,11 @@ public class InMemoryAdmissionController implements AdmissionController {
             metrics.recordAdmission("disabled", request.streaming());
             return Mono.just(AdmissionLease.noOp());
         }
+        TenantPolicyResolver.TenantPolicy tenantPolicy = tenantPolicyResolver.resolve(request.tenantId());
         WindowCounter counter = requestCounters.computeIfAbsent(request.tenantId(), ignored -> new WindowCounter());
-        if (!counter.tryAcquire(properties.getAdmission().getRateWindowSeconds(), properties.getAdmission().getMaxRequestsPerWindow())) {
+        if (!counter.tryAcquire(properties.getAdmission().getRateWindowSeconds(), tenantPolicy.maxRequestsPerWindow())) {
             metrics.recordAdmission("rate_limited", request.streaming());
-            return Mono.error(new AdmissionRejectedException("Tenant rate limit exceeded."));
+            return Mono.error(new AdmissionRejectedException("tenant_rate_limited", "Tenant rate limit exceeded."));
         }
         if (!request.streaming()) {
             metrics.recordAdmission("accepted", false);
@@ -43,14 +47,14 @@ public class InMemoryAdmissionController implements AdmissionController {
         if (global > properties.getAdmission().getMaxActiveStreams()) {
             activeStreams.decrementAndGet();
             metrics.recordAdmission("global_stream_rejected", true);
-            return Mono.error(new AdmissionRejectedException("Too many active streams."));
+            return Mono.error(new AdmissionRejectedException("global_stream_limit_exceeded", "Too many active streams."));
         }
         int tenant = tenantCounter.incrementAndGet();
-        if (tenant > properties.getAdmission().getMaxActiveStreamsPerTenant()) {
+        if (tenant > tenantPolicy.maxActiveStreamsPerTenant()) {
             tenantCounter.decrementAndGet();
             activeStreams.decrementAndGet();
             metrics.recordAdmission("tenant_stream_rejected", true);
-            return Mono.error(new AdmissionRejectedException("Tenant active stream quota exceeded."));
+            return Mono.error(new AdmissionRejectedException("tenant_stream_limit_exceeded", "Tenant active stream quota exceeded."));
         }
         metrics.recordAdmission("accepted", true);
         return Mono.just(() -> Mono.fromRunnable(() -> {

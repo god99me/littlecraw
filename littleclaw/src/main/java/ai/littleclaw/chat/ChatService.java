@@ -5,6 +5,7 @@ import ai.littleclaw.admission.AdmissionRequest;
 import ai.littleclaw.api.RequestContext;
 import ai.littleclaw.command.CommandRouter;
 import ai.littleclaw.config.LittleClawProperties;
+import ai.littleclaw.config.TenantPolicyResolver;
 import ai.littleclaw.context.ContextAssembler;
 import ai.littleclaw.context.ContextEnvelope;
 import ai.littleclaw.observability.ChatMetrics;
@@ -46,6 +47,7 @@ public class ChatService {
     private final ActiveRequestRegistry activeRequestRegistry;
     private final ConversationStore conversationStore;
     private final ChannelResponseRenderer channelResponseRenderer;
+    private final TenantPolicyResolver tenantPolicyResolver;
     private final ChatMetrics metrics;
 
     public ChatService(SkillRegistry skillRegistry,
@@ -57,6 +59,7 @@ public class ChatService {
                        ActiveRequestRegistry activeRequestRegistry,
                        ConversationStore conversationStore,
                        ChannelResponseRenderer channelResponseRenderer,
+                       TenantPolicyResolver tenantPolicyResolver,
                        ChatMetrics metrics) {
         this.skillRegistry = skillRegistry;
         this.chatEngine = chatEngine;
@@ -67,6 +70,7 @@ public class ChatService {
         this.activeRequestRegistry = activeRequestRegistry;
         this.conversationStore = conversationStore;
         this.channelResponseRenderer = channelResponseRenderer;
+        this.tenantPolicyResolver = tenantPolicyResolver;
         this.metrics = metrics;
     }
 
@@ -125,6 +129,8 @@ public class ChatService {
                     defaultConversationId(request.conversationId()),
                     request.parentMessageId(),
                     "not_found",
+                    "error",
+                    "conversation_turn_not_found",
                     Map.of("action", "regenerate")
             ), requestContext));
         }
@@ -223,6 +229,8 @@ public class ChatService {
                                 session.conversationId(),
                                 session.parentMessageId(),
                                 "streaming",
+                                "ok",
+                                null,
                                 session.metadata()
                         ), requestContext))
                 .map(chunk -> ServerSentEvent.<ChatChunk>builder().event("chunk").id(session.id()).data(chunk).build())
@@ -240,6 +248,8 @@ public class ChatService {
                                 session.conversationId(),
                                 session.parentMessageId(),
                                 activeRequestRegistry.isCancelled(session.requestId()) ? "interrupted" : "completed",
+                                activeRequestRegistry.isCancelled(session.requestId()) ? "interrupted" : "ok",
+                                activeRequestRegistry.isCancelled(session.requestId()) ? "request_interrupted" : null,
                                 session.metadata()
                         ), requestContext))
                         .build())
@@ -252,7 +262,7 @@ public class ChatService {
 
     private Mono<ChatSession> createSession(ChatRequest request, RequestContext requestContext) {
         List<ChatMessage> sessionMessages = sessionMessages(request);
-        validate(sessionMessages, request.maxTokens(), request.temperature());
+        validate(sessionMessages, request.maxTokens(), request.temperature(), requestContext.tenantId());
         String latestUserMessage = sessionMessages.get(sessionMessages.size() - 1).content();
         List<Skill> matchedSkills = skillRegistry.match(latestUserMessage, 4).stream().map(SkillMatch::skill).toList();
         return contextAssembler.assemble(
@@ -287,12 +297,21 @@ public class ChatService {
         metadata.put("ragHitCount", context.ragSnippets().size());
         metadata.put("mcpToolCount", context.mcpTools().size());
         metadata.put("hasChannel", request.channel() != null);
-        metadata.put("protocolVersion", "2026-03-14.v4");
+        TenantPolicyResolver.TenantPolicy tenantPolicy = tenantPolicyResolver.resolve(requestContext.tenantId());
+        metadata.put("protocolVersion", "2026-03-15.v5");
         metadata.put("action", request.action().name().toLowerCase());
         metadata.put("requestChannel", requestContext.channel());
         metadata.put("messageCount", sessionMessages.size());
         metadata.put("continuedConversation", sessionMessages.size() > request.messages().size());
         metadata.put("stream", request.stream());
+        metadata.put("tenantPolicy", Map.of(
+                "tenantId", tenantPolicy.tenantId(),
+                "tenantName", tenantPolicy.tenantName(),
+                "maxRequestsPerWindow", tenantPolicy.maxRequestsPerWindow(),
+                "maxActiveStreamsPerTenant", tenantPolicy.maxActiveStreamsPerTenant(),
+                "maxInputChars", tenantPolicy.maxInputChars(),
+                "maxMaxTokens", tenantPolicy.maxMaxTokens()
+        ));
         return new ChatSession(
                 UUID.randomUUID().toString(),
                 Instant.now(),
@@ -320,6 +339,8 @@ public class ChatService {
                 session.conversationId(),
                 session.parentMessageId(),
                 finishReason,
+                "completed".equals(finishReason) ? "ok" : "interrupted",
+                "completed".equals(finishReason) ? null : "request_interrupted",
                 session.metadata()
         ), requestContext);
     }
@@ -344,6 +365,8 @@ public class ChatService {
     }
 
     private ChatResponse toControlResponse(ChatRequest request, ChatControlResponse control, String finishReason) {
+        String status = "ignored".equals(control.status()) ? "error" : "ok";
+        String errorCode = "ok".equals(status) ? null : String.valueOf(control.metadata().getOrDefault("errorCode", "control_request_ignored"));
         return new ChatResponse(
                 UUID.randomUUID().toString(),
                 Instant.now(),
@@ -354,6 +377,8 @@ public class ChatService {
                 defaultConversationId(request.conversationId()),
                 request.parentMessageId(),
                 finishReason,
+                status,
+                errorCode,
                 control.metadata()
         );
     }
@@ -373,6 +398,8 @@ public class ChatService {
                         defaultConversationId(request.conversationId()),
                         request.parentMessageId(),
                         finishReason,
+                        "ignored".equals(control.status()) ? "error" : "ok",
+                        "ignored".equals(control.status()) ? String.valueOf(control.metadata().getOrDefault("errorCode", "control_request_ignored")) : null,
                         control.metadata()
                 ), requestContext))
                 .build();
@@ -386,12 +413,13 @@ public class ChatService {
         return channelResponseRenderer.render(chunk, requestContext.channel());
     }
 
-    private void validate(List<ChatMessage> messages, Integer maxTokens, Double temperature) {
+    private void validate(List<ChatMessage> messages, Integer maxTokens, Double temperature, String tenantId) {
+        TenantPolicyResolver.TenantPolicy tenantPolicy = tenantPolicyResolver.resolve(tenantId);
         if (messages.size() > properties.getLimits().getMaxMessages()) {
             throw new ValidationException("Too many messages in request.");
         }
-        if (maxTokens != null && maxTokens > properties.getLimits().getMaxMaxTokens()) {
-            throw new ValidationException("Requested maxTokens exceeds configured limit.");
+        if (maxTokens != null && maxTokens > tenantPolicy.maxMaxTokens()) {
+            throw new ValidationException("Requested maxTokens exceeds configured tenant limit.");
         }
         if (temperature != null && (temperature < 0.0 || temperature > 2.0)) {
             throw new ValidationException("Temperature must be between 0.0 and 2.0.");
@@ -409,8 +437,8 @@ public class ChatService {
             }
             totalChars += message.content().length();
         }
-        if (totalChars > properties.getLimits().getMaxInputChars()) {
-            throw new ValidationException("Input exceeds configured size limit.");
+        if (totalChars > tenantPolicy.maxInputChars()) {
+            throw new ValidationException("Input exceeds configured tenant size limit.");
         }
     }
 

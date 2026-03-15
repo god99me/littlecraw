@@ -129,6 +129,16 @@ Pulled a first enterprise-hardening slice into the codebase instead of leaving i
 - introduced conversation transcript policy with TTL and transcript trimming so continued conversations do not grow without limit
 - updated tests to cover auth gating and the tighter conversation continuation path
 
+## 2026-03-15 18:45 CST
+
+Pulled another enterprise-facing slice into the service contract and tenant controls:
+
+- introduced tenant policy resolution so configured API clients can override request-per-window, active stream, input size, and max token limits
+- applied tenant-aware validation and admission decisions to the live request path instead of leaving limits as global-only defaults
+- extended chat and chunk payloads with `status` and `errorCode` so client integrations can branch on stable machine-readable outcomes
+- normalized admission rejection codes and surfaced them through the API error response
+- documented the current wire contract in `docs/api-contract-v1.md` including headers, request fields, SSE event types, and stable error codes
+
 ## Blockers
 
 - Java and Maven are not installed in this environment, so compile/test execution could not be validated locally

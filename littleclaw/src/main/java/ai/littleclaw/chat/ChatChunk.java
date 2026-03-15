@@ -15,6 +15,8 @@ public record ChatChunk(
         String conversationId,
         String parentMessageId,
         String finishReason,
+        String status,
+        String errorCode,
         Map<String, Object> metadata
 ) {
 }

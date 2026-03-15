@@ -32,8 +32,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AdmissionRejectedException.class)
     @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
     public ApiErrorResponse handleAdmissionRejected(AdmissionRejectedException exception, ServerWebExchange exchange) {
-        metrics.recordError("request", "admission_rejected", requestContext(exchange).channel());
-        return errorResponse("admission_rejected", exception.getMessage(), exchange, Map.of());
+        metrics.recordError("request", exception.getCode(), requestContext(exchange).channel());
+        return errorResponse("admission_rejected", exception.getMessage(), exchange, Map.of("code", exception.getCode()));
     }
 
     @ExceptionHandler(ProviderException.class)

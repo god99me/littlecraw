@@ -14,6 +14,8 @@ public record ChatResponse(
         String conversationId,
         String parentMessageId,
         String finishReason,
+        String status,
+        String errorCode,
         Map<String, Object> metadata
 ) {
 }
