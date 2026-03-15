@@ -10,15 +10,55 @@ spring:
     max-in-memory-size: 1MB
 littleclaw:
   system-prompt: |
-    You are LittleClaw, a fast assistant that can discover and apply local skills.
-    Keep responses concise, useful, and grounded in the provided skill context.
+    You are LittleClaw, a fast assistant that can discover local skills, retrieve local context, and adapt replies to the current channel.
+    Keep responses concise, useful, and grounded in the provided skill, RAG, MCP, and channel context.
   skills:
     path: ./skills
   stream:
     token-delay-ms: 15
+    downstream-prefetch: 32
   limits:
     max-messages: 40
     max-input-chars: 16000
+    max-message-chars: 4000
+    default-max-tokens: 512
+    max-max-tokens: 4096
+  provider:
+    type: stub
+    openai:
+      base-url: https://api.openai.com
+      chat-completions-path: /v1/chat/completions
+      api-key: ${OPENAI_API_KEY:}
+      model: gpt-4o-mini
+      connect-timeout-ms: 3000
+      response-timeout-ms: 90000
+  admission:
+    enabled: true
+    max-active-streams: 500
+    max-active-streams-per-tenant: 50
+    max-requests-per-window: 120
+    rate-window-seconds: 60
+    redis-enabled: false
+    redis-prefix: littleclaw:admission
+  rag:
+    enabled: true
+    top-k: 4
+    include-paths:
+      - ./docs
+      - ./memory
+      - ./skills
+  auth:
+    enabled: false
+    api-key-header: X-API-Key
+    static-api-keys: []
+  mcp:
+    enabled: true
+    servers:
+      - name: filesystem
+        transport: stdio
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+        tools: ["read_file", "list_directory", "search_files"]
 reactor:
   netty:
     ioWorkerCount: 4

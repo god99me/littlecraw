@@ -21,8 +21,11 @@ public class HeuristicChatEngine implements ChatEngine {
                 plan.systemPrompt(),
                 plan.messages(),
                 plan.skills(),
-                null,
-                null
+                plan.ragSnippets(),
+                plan.mcpTools(),
+                plan.channel(),
+                plan.maxTokens(),
+                plan.temperature()
         );
         return chatProvider.stream(request)
                 .filter(chunk -> !chunk.done())

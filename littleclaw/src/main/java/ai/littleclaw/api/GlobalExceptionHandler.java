@@ -1,5 +1,6 @@
 package ai.littleclaw.api;
 
+import ai.littleclaw.admission.AdmissionRejectedException;
 import jakarta.validation.ValidationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -18,6 +19,16 @@ public class GlobalExceptionHandler {
         return Map.of(
                 "timestamp", Instant.now().toString(),
                 "error", "validation_error",
+                "message", exception.getMessage()
+        );
+    }
+
+    @ExceptionHandler(AdmissionRejectedException.class)
+    @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
+    public Map<String, Object> handleAdmissionRejected(AdmissionRejectedException exception) {
+        return Map.of(
+                "timestamp", Instant.now().toString(),
+                "error", "admission_rejected",
                 "message", exception.getMessage()
         );
     }

@@ -37,14 +37,31 @@
 - fixed-size token cadence
 - validate transport overhead only
 - goal: prove connection handling and SSE serialization
+- run three payload profiles: short, medium, and near-limit requests
 
 ### Phase 2: stub async provider
 - emulate variable latency and chunking
 - validate timeout and backpressure behavior
+- inject stalled-chunk and upstream-reset scenarios
 
 ### Phase 3: real provider
 - OpenAI/Claude/vLLM adapter under quotas
 - validate connection pooling and upstream failures
+- compare p95 first-byte latency against the synthetic baseline
+
+## Benchmark matrix
+
+For every phase, record results across:
+
+- concurrency: 100, 250, 500, 750 active streams
+- response length: 128, 512, 2048 output tokens
+- prompt shape: short, medium, near-limit
+- failure mode: none, 429s, connect timeout, inter-chunk stall
+
+A good benchmark report should answer two questions:
+
+1. What is the highest sustained SSE QPS before p99 first-byte latency or memory growth becomes unacceptable?
+2. How fast does the system recover after provider stalls or quota errors?
 
 ## Known bottlenecks to avoid
 

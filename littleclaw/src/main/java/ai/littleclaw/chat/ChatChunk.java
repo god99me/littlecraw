@@ -2,6 +2,7 @@ package ai.littleclaw.chat;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 public record ChatChunk(
         String id,
@@ -9,6 +10,11 @@ public record ChatChunk(
         String model,
         List<String> activeSkills,
         String delta,
-        boolean done
+        boolean done,
+        String requestId,
+        String conversationId,
+        String parentMessageId,
+        String finishReason,
+        Map<String, Object> metadata
 ) {
 }

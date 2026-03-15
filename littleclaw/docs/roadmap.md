@@ -11,13 +11,15 @@
 
 ## Next implementation wave
 
-- [ ] OpenAI-compatible provider adapter
-- [ ] Redis-backed rate limiting
+- [x] OpenAI-compatible provider adapter
+- [x] Redis-backed rate limiting
 - [ ] API key / JWT auth filter
-- [ ] tenant quotas and request cost controls
+- [ ] weighted tenant quotas and request cost controls
 - [ ] k6 or Gatling benchmark scripts
 - [ ] Micrometer metrics
 - [ ] structured error model
+- [x] request guardrail defaults for roles, prompt size, and token caps
+- [x] provider adapter contract and timeout/error notes
 
 ## Production wave
 
