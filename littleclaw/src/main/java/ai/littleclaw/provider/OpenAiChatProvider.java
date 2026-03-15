@@ -2,11 +2,13 @@ package ai.littleclaw.provider;
 
 import ai.littleclaw.chat.ChatMessage;
 import ai.littleclaw.config.LittleClawProperties;
+import ai.littleclaw.observability.ChatMetrics;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.channel.ChannelOption;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Component;
@@ -14,7 +16,9 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.netty.http.client.HttpClient;
+import reactor.util.retry.Retry;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -28,10 +32,12 @@ public class OpenAiChatProvider implements ChatProvider {
     private final LittleClawProperties properties;
     private final ObjectMapper objectMapper;
     private final WebClient webClient;
+    private final ChatMetrics metrics;
 
-    public OpenAiChatProvider(LittleClawProperties properties, ObjectMapper objectMapper) {
+    public OpenAiChatProvider(LittleClawProperties properties, ObjectMapper objectMapper, ChatMetrics metrics) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
         HttpClient httpClient = HttpClient.create()
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, properties.getProvider().getOpenai().getConnectTimeoutMs())
                 .responseTimeout(Duration.ofMillis(properties.getProvider().getOpenai().getResponseTimeoutMs()));
@@ -50,7 +56,7 @@ public class OpenAiChatProvider implements ChatProvider {
     @Override
     public Flux<ProviderChunk> stream(ProviderRequest request) {
         if (!StringUtils.hasText(properties.getProvider().getOpenai().getApiKey())) {
-            return Flux.error(new IllegalStateException("OpenAI provider selected but no API key is configured."));
+            return Flux.error(new ProviderException("provider_not_configured", "OpenAI provider selected but no API key is configured.", false, 500));
         }
         return webClient.post()
                 .uri(properties.getProvider().getOpenai().getChatCompletionsPath())
@@ -58,8 +64,17 @@ public class OpenAiChatProvider implements ChatProvider {
                 .accept(MediaType.TEXT_EVENT_STREAM, MediaType.APPLICATION_JSON)
                 .bodyValue(buildPayload(request))
                 .retrieve()
+                .onStatus(HttpStatusCode::isError, response -> response.bodyToMono(String.class)
+                        .defaultIfEmpty("")
+                        .map(body -> mapProviderStatus(response.statusCode(), body)))
                 .bodyToFlux(String.class)
                 .flatMap(this::decodeEventBlock)
+                .retryWhen(Retry.backoff(properties.getProvider().getOpenai().getMaxRetries(), Duration.ofMillis(properties.getProvider().getOpenai().getRetryBackoffMs()))
+                        .filter(this::isRetryable)
+                        .onRetryExhaustedThrow((spec, signal) -> signal.failure()))
+                .doOnSubscribe(ignored -> metrics.recordProvider(id(), "started", false))
+                .doOnError(error -> metrics.recordProvider(id(), providerOutcome(error), isRetryable(error)))
+                .doOnComplete(() -> metrics.recordProvider(id(), "completed", false))
                 .limitRate(properties.getStream().getDownstreamPrefetch())
                 .concatWithValues(new ProviderChunk("", true));
     }
@@ -99,9 +114,39 @@ public class OpenAiChatProvider implements ChatProvider {
                 return messageNode.asText("");
             }
             return "";
-        } catch (Exception exception) {
-            throw new IllegalStateException("Failed to decode upstream SSE payload.", exception);
+        } catch (IOException exception) {
+            throw new ProviderException("provider_payload_decode_failed", "Failed to decode upstream SSE payload.", false, 502, exception);
         }
+    }
+
+    private ProviderException mapProviderStatus(HttpStatusCode statusCode, String body) {
+        int status = statusCode.value();
+        if (status == 401 || status == 403) {
+            return new ProviderException("provider_auth_failed", providerMessage("Upstream provider rejected authentication.", body), false, status);
+        }
+        if (status == 408 || status == 429) {
+            return new ProviderException("provider_rate_limited", providerMessage("Upstream provider rate limited or timed out.", body), true, status);
+        }
+        if (status >= 500) {
+            return new ProviderException("provider_upstream_failed", providerMessage("Upstream provider failed.", body), true, status);
+        }
+        return new ProviderException("provider_request_rejected", providerMessage("Upstream provider rejected the request.", body), false, status);
+    }
+
+    private boolean isRetryable(Throwable error) {
+        return error instanceof ProviderException providerException && providerException.isRetryable();
+    }
+
+    private String providerOutcome(Throwable error) {
+        return error instanceof ProviderException providerException ? providerException.getCode() : "provider_unknown_error";
+    }
+
+    private String providerMessage(String prefix, String body) {
+        if (!StringUtils.hasText(body)) {
+            return prefix;
+        }
+        String trimmed = body.length() > 240 ? body.substring(0, 240) : body;
+        return prefix + " body=" + trimmed;
     }
 
     private Map<String, Object> buildPayload(ProviderRequest request) {

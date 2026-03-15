@@ -117,6 +117,18 @@ Tightened the overnight control-plane work so it behaves more like a real thread
 - added conversation continuation so a follow-up request with the same `conversationId` can reuse prior transcript context instead of acting like an isolated single turn
 - extended service and controller tests for stream regenerate, stop-by-response-id, continued conversation, and cancellation cleanup
 
+## 2026-03-15 16:20 CST
+
+Pulled a first enterprise-hardening slice into the codebase instead of leaving it as roadmap text:
+
+- added actuator + Prometheus dependencies and management endpoint exposure for `health`, `info`, and `prometheus`
+- added `ChatMetrics` counters/gauges/timers for auth, admission, chat requests, stream lifecycle, provider calls, and conversation storage
+- upgraded auth from a bare static key list to support tenant-bound API keys that can assert or inject `X-Tenant-Id`
+- standardized API error payloads with `requestId`, `tenantId`, and provider-specific details
+- hardened the OpenAI-compatible provider with upstream status classification, retryable vs non-retryable errors, bounded retry/backoff config, and explicit `ProviderException`
+- introduced conversation transcript policy with TTL and transcript trimming so continued conversations do not grow without limit
+- updated tests to cover auth gating and the tighter conversation continuation path
+
 ## Blockers
 
 - Java and Maven are not installed in this environment, so compile/test execution could not be validated locally

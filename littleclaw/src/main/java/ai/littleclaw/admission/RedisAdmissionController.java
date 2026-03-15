@@ -1,6 +1,7 @@
 package ai.littleclaw.admission;
 
 import ai.littleclaw.config.LittleClawProperties;
+import ai.littleclaw.observability.ChatMetrics;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -70,10 +71,12 @@ public class RedisAdmissionController implements AdmissionController {
 
     private final ReactiveStringRedisTemplate redis;
     private final LittleClawProperties properties;
+    private final ChatMetrics metrics;
 
-    public RedisAdmissionController(ReactiveStringRedisTemplate redis, LittleClawProperties properties) {
+    public RedisAdmissionController(ReactiveStringRedisTemplate redis, LittleClawProperties properties, ChatMetrics metrics) {
         this.redis = redis;
         this.properties = properties;
+        this.metrics = metrics;
     }
 
     @Override
@@ -95,11 +98,26 @@ public class RedisAdmissionController implements AdmissionController {
                 .next()
                 .switchIfEmpty(Mono.error(new AdmissionRejectedException("Admission controller returned no result.")))
                 .flatMap(code -> switch (code.intValue()) {
-                    case -1 -> Mono.error(new AdmissionRejectedException("Tenant rate limit exceeded."));
-                    case -2 -> Mono.error(new AdmissionRejectedException("Too many active streams."));
-                    case -3 -> Mono.error(new AdmissionRejectedException("Tenant active stream quota exceeded."));
-                    case 1 -> Mono.just(AdmissionLease.noOp());
-                    case 2 -> Mono.just(buildStreamLease(globalKey, tenantKey));
+                    case -1 -> {
+                        metrics.recordAdmission("rate_limited", request.streaming());
+                        yield Mono.error(new AdmissionRejectedException("Tenant rate limit exceeded."));
+                    }
+                    case -2 -> {
+                        metrics.recordAdmission("global_stream_rejected", true);
+                        yield Mono.error(new AdmissionRejectedException("Too many active streams."));
+                    }
+                    case -3 -> {
+                        metrics.recordAdmission("tenant_stream_rejected", true);
+                        yield Mono.error(new AdmissionRejectedException("Tenant active stream quota exceeded."));
+                    }
+                    case 1 -> {
+                        metrics.recordAdmission("accepted", false);
+                        yield Mono.just(AdmissionLease.noOp());
+                    }
+                    case 2 -> {
+                        metrics.recordAdmission("accepted", true);
+                        yield Mono.just(buildStreamLease(globalKey, tenantKey));
+                    }
                     default -> Mono.error(new AdmissionRejectedException("Unknown admission result: " + code));
                 });
     }

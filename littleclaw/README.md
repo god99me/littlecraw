@@ -19,8 +19,11 @@
 - Local filesystem RAG over docs, memory, and skills as a safe starter retriever
 - OpenAI-compatible reactive provider adapter behind `ChatProvider`
 - Per-tenant rate limiting plus global and tenant stream quotas
+- API key auth with tenant-bound credentials and request context headers
 - Regenerate, interrupt, and conversation continuation with stored turn state
-- Simple health endpoint and skill inspection endpoint
+- Conversation TTL + transcript trimming for safer long-running state growth
+- Prometheus-ready metrics and structured request logging
+- Simple health endpoint, actuator health probes, and skill inspection endpoint
 
 ## Project structure
 

@@ -1,6 +1,8 @@
 package ai.littleclaw.session;
 
 import ai.littleclaw.chat.ChatMessage;
+import ai.littleclaw.config.LittleClawProperties;
+import ai.littleclaw.observability.ChatMetrics;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -8,6 +10,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.List;
 
 @Component
@@ -20,29 +23,39 @@ public class RedisConversationStore implements ConversationStore {
 
     private final ReactiveStringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    private final ConversationTranscriptPolicy transcriptPolicy;
+    private final LittleClawProperties properties;
+    private final ChatMetrics metrics;
 
-    public RedisConversationStore(ReactiveStringRedisTemplate redis, ObjectMapper objectMapper) {
+    public RedisConversationStore(ReactiveStringRedisTemplate redis,
+                                  ObjectMapper objectMapper,
+                                  ConversationTranscriptPolicy transcriptPolicy,
+                                  LittleClawProperties properties,
+                                  ChatMetrics metrics) {
         this.redis = redis;
         this.objectMapper = objectMapper;
+        this.transcriptPolicy = transcriptPolicy;
+        this.properties = properties;
+        this.metrics = metrics;
     }
 
     @Override
     public void save(String conversationId, String responseId, String requestId, List<ChatMessage> requestMessages, String responseContent) {
         try {
-            List<ChatMessage> transcriptMessages = new java.util.ArrayList<>(requestMessages);
-            if (responseContent != null && !responseContent.isBlank()) {
-                transcriptMessages.add(new ChatMessage("assistant", responseContent));
-            }
+            ConversationTurn turn = transcriptPolicy.buildTurn(responseId, requestId, requestMessages, responseContent);
             String payload = objectMapper.writeValueAsString(new ConversationTurnPayload(
-                    requestId,
-                    requestMessages,
-                    transcriptMessages
+                    turn.requestId(),
+                    turn.requestMessages(),
+                    turn.transcriptMessages()
             ));
-            redis.opsForValue().set(turnKey(responseId), payload).block();
+            Duration ttl = Duration.ofSeconds(properties.getSession().getConversationTtlSeconds());
+            redis.opsForValue().set(turnKey(responseId), payload, ttl).block();
             if (conversationId != null && !conversationId.isBlank()) {
-                redis.opsForValue().set(latestKey(conversationId), responseId).block();
+                redis.opsForValue().set(latestKey(conversationId), responseId, ttl).block();
             }
+            metrics.recordConversationStore("save", "success");
         } catch (Exception exception) {
+            metrics.recordConversationStore("save", "error");
             throw new IllegalStateException("Failed to persist conversation turn.", exception);
         }
     }
@@ -52,11 +65,14 @@ public class RedisConversationStore implements ConversationStore {
         try {
             String payload = redis.opsForValue().get(turnKey(responseId)).block();
             if (payload == null) {
+                metrics.recordConversationStore("find_by_response", "miss");
                 return null;
             }
             ConversationTurnPayload turn = objectMapper.readValue(payload, TURN_PAYLOAD);
+            metrics.recordConversationStore("find_by_response", "hit");
             return new ConversationTurn(responseId, turn.requestId(), turn.requestMessages(), turn.transcriptMessages());
         } catch (Exception exception) {
+            metrics.recordConversationStore("find_by_response", "error");
             throw new IllegalStateException("Failed to load conversation turn.", exception);
         }
     }
@@ -64,7 +80,13 @@ public class RedisConversationStore implements ConversationStore {
     @Override
     public ConversationTurn latestForConversation(String conversationId) {
         String responseId = redis.opsForValue().get(latestKey(conversationId)).block();
-        return responseId == null ? null : findByResponseId(responseId);
+        if (responseId == null) {
+            metrics.recordConversationStore("latest_for_conversation", "miss");
+            return null;
+        }
+        ConversationTurn turn = findByResponseId(responseId);
+        metrics.recordConversationStore("latest_for_conversation", turn == null ? "miss" : "hit");
+        return turn;
     }
 
     private String turnKey(String responseId) {

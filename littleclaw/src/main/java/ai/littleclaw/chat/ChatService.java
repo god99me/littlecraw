@@ -7,6 +7,7 @@ import ai.littleclaw.command.CommandRouter;
 import ai.littleclaw.config.LittleClawProperties;
 import ai.littleclaw.context.ContextAssembler;
 import ai.littleclaw.context.ContextEnvelope;
+import ai.littleclaw.observability.ChatMetrics;
 import ai.littleclaw.render.ChannelResponseRenderer;
 import ai.littleclaw.skill.Skill;
 import ai.littleclaw.skill.SkillMatch;
@@ -23,6 +24,8 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.Instant;
+import io.micrometer.core.instrument.Timer;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +46,7 @@ public class ChatService {
     private final ActiveRequestRegistry activeRequestRegistry;
     private final ConversationStore conversationStore;
     private final ChannelResponseRenderer channelResponseRenderer;
+    private final ChatMetrics metrics;
 
     public ChatService(SkillRegistry skillRegistry,
                        ChatEngine chatEngine,
@@ -52,7 +56,8 @@ public class ChatService {
                        CommandRouter commandRouter,
                        ActiveRequestRegistry activeRequestRegistry,
                        ConversationStore conversationStore,
-                       ChannelResponseRenderer channelResponseRenderer) {
+                       ChannelResponseRenderer channelResponseRenderer,
+                       ChatMetrics metrics) {
         this.skillRegistry = skillRegistry;
         this.chatEngine = chatEngine;
         this.properties = properties;
@@ -62,23 +67,34 @@ public class ChatService {
         this.activeRequestRegistry = activeRequestRegistry;
         this.conversationStore = conversationStore;
         this.channelResponseRenderer = channelResponseRenderer;
+        this.metrics = metrics;
     }
 
     public Mono<ChatResponse> complete(ChatRequest request, RequestContext requestContext) {
         ChatRequest normalized = normalize(request, requestContext);
+        Timer.Sample sample = metrics.startRequest();
+        Mono<ChatResponse> response;
         if (normalized.action() == ChatAction.STOP) {
-            return commandRouter.route(normalized).map(control -> renderResponse(toControlResponse(normalized, control, "stopped"), requestContext));
+            response = commandRouter.route(normalized).map(control -> renderResponse(toControlResponse(normalized, control, "stopped"), requestContext));
+        } else if (normalized.action() == ChatAction.REGENERATE) {
+            response = regenerate(normalized, requestContext);
+        } else if (normalized.action() == ChatAction.COMMAND) {
+            response = commandRouter.route(normalized).map(control -> renderResponse(toControlResponse(normalized, control, "control"), requestContext));
+        } else {
+            response = commandRouter.route(normalized)
+                    .map(control -> renderResponse(toControlResponse(normalized, control, "control"), requestContext))
+                    .switchIfEmpty(createSession(normalized, requestContext)
+                            .flatMap(session -> runCompletion(session, requestContext)));
         }
-        if (normalized.action() == ChatAction.REGENERATE) {
-            return regenerate(normalized, requestContext);
-        }
-        if (normalized.action() == ChatAction.COMMAND) {
-            return commandRouter.route(normalized).map(control -> renderResponse(toControlResponse(normalized, control, "control"), requestContext));
-        }
-        return commandRouter.route(normalized)
-                .map(control -> renderResponse(toControlResponse(normalized, control, "control"), requestContext))
-                .switchIfEmpty(createSession(normalized, requestContext)
-                        .flatMap(session -> runCompletion(session, requestContext)));
+        return response
+                .doOnSuccess(chatResponse -> metrics.recordCompletion(
+                        normalized.action().name().toLowerCase(),
+                        chatResponse.finishReason(),
+                        requestContext.channel(),
+                        Boolean.TRUE.equals(chatResponse.metadata().get("continuedConversation")),
+                        sample
+                ))
+                .doOnError(error -> metrics.recordError(normalized.action().name().toLowerCase(), error.getClass().getSimpleName(), requestContext.channel()));
     }
 
     public Flux<ServerSentEvent<ChatChunk>> stream(ChatRequest request, RequestContext requestContext) {
@@ -166,11 +182,25 @@ public class ChatService {
     }
 
     private Flux<ServerSentEvent<ChatChunk>> streamSession(ChatSession session, RequestContext requestContext) {
+        metrics.recordStreamStart(session.metadata().get("action").toString(), requestContext.channel());
+        final boolean[] ended = {false};
         return Flux.usingWhen(
-                admissionController.acquire(new AdmissionRequest(session.tenantId(), true, session.plan().maxTokens())),
-                lease -> streamWithLease(session, requestContext),
-                lease -> lease.release().onErrorResume(error -> Mono.empty())
-        );
+                        admissionController.acquire(new AdmissionRequest(session.tenantId(), true, session.plan().maxTokens())),
+                        lease -> streamWithLease(session, requestContext),
+                        lease -> lease.release().onErrorResume(error -> Mono.empty())
+                )
+                .doOnError(error -> metrics.recordError(session.metadata().get("action").toString(), error.getClass().getSimpleName(), requestContext.channel()))
+                .doFinally(signalType -> {
+                    if (!ended[0]) {
+                        metrics.recordStreamEnd(
+                                session.metadata().get("action").toString(),
+                                signalType.name().toLowerCase(),
+                                requestContext.channel(),
+                                Boolean.TRUE.equals(session.metadata().get("continuedConversation"))
+                        );
+                    }
+                })
+                .doOnComplete(() -> ended[0] = true);
     }
 
     private Flux<ServerSentEvent<ChatChunk>> streamWithLease(ChatSession session, RequestContext requestContext) {
@@ -262,6 +292,7 @@ public class ChatService {
         metadata.put("requestChannel", requestContext.channel());
         metadata.put("messageCount", sessionMessages.size());
         metadata.put("continuedConversation", sessionMessages.size() > request.messages().size());
+        metadata.put("stream", request.stream());
         return new ChatSession(
                 UUID.randomUUID().toString(),
                 Instant.now(),
@@ -300,6 +331,14 @@ public class ChatService {
                 conversationStore.save(session.conversationId(), session.id(), session.requestId(), session.plan().messages(), content);
             }
         } finally {
+            if (Boolean.TRUE.equals(session.metadata().get("stream"))) {
+                metrics.recordStreamEnd(
+                        session.metadata().get("action").toString(),
+                        finishReason,
+                        String.valueOf(session.metadata().get("requestChannel")),
+                        Boolean.TRUE.equals(session.metadata().get("continuedConversation"))
+                );
+            }
             activeRequestRegistry.complete(session.requestId());
         }
     }

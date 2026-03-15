@@ -8,6 +8,18 @@ spring:
     timeout-per-shutdown-phase: 20s
   codec:
     max-in-memory-size: 1MB
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
 littleclaw:
   system-prompt: |
     You are LittleClaw, a fast assistant that can discover local skills, retrieve local context, and adapt replies to the current channel.
@@ -32,6 +44,8 @@ littleclaw:
       model: gpt-4o-mini
       connect-timeout-ms: 3000
       response-timeout-ms: 90000
+      max-retries: 1
+      retry-backoff-ms: 250
   admission:
     enabled: true
     max-active-streams: 500
@@ -51,6 +65,11 @@ littleclaw:
     enabled: false
     api-key-header: X-API-Key
     static-api-keys: []
+    clients: []
+  session:
+    max-transcript-messages: 24
+    max-transcript-chars: 24000
+    conversation-ttl-seconds: 21600
   mcp:
     enabled: true
     servers:

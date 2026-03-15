@@ -24,6 +24,7 @@ public class LittleClawProperties {
     private final Rag rag = new Rag();
     private final Mcp mcp = new Mcp();
     private final Auth auth = new Auth();
+    private final Session session = new Session();
 
     public String getSystemPrompt() {
         return systemPrompt;
@@ -63,6 +64,10 @@ public class LittleClawProperties {
 
     public Auth getAuth() {
         return auth;
+    }
+
+    public Session getSession() {
+        return session;
     }
 
     public static class Skills {
@@ -205,6 +210,14 @@ public class LittleClawProperties {
         @Max(600000)
         private int responseTimeoutMs = 90000;
 
+        @Min(0)
+        @Max(10)
+        private int maxRetries = 1;
+
+        @Min(10)
+        @Max(60000)
+        private int retryBackoffMs = 250;
+
         public String getBaseUrl() {
             return baseUrl;
         }
@@ -251,6 +264,22 @@ public class LittleClawProperties {
 
         public void setResponseTimeoutMs(int responseTimeoutMs) {
             this.responseTimeoutMs = responseTimeoutMs;
+        }
+
+        public int getMaxRetries() {
+            return maxRetries;
+        }
+
+        public void setMaxRetries(int maxRetries) {
+            this.maxRetries = maxRetries;
+        }
+
+        public int getRetryBackoffMs() {
+            return retryBackoffMs;
+        }
+
+        public void setRetryBackoffMs(int retryBackoffMs) {
+            this.retryBackoffMs = retryBackoffMs;
         }
     }
 
@@ -372,6 +401,7 @@ public class LittleClawProperties {
         private String apiKeyHeader = "X-API-Key";
 
         private final List<String> staticApiKeys = new ArrayList<>();
+        private final List<Client> clients = new ArrayList<>();
 
         public boolean isEnabled() {
             return enabled;
@@ -391,6 +421,82 @@ public class LittleClawProperties {
 
         public List<String> getStaticApiKeys() {
             return staticApiKeys;
+        }
+
+        public List<Client> getClients() {
+            return clients;
+        }
+
+        public static class Client {
+            @NotBlank
+            private String tenantId = "default";
+
+            @NotBlank
+            private String apiKey = "replace-me";
+
+            private String name = "";
+
+            public String getTenantId() {
+                return tenantId;
+            }
+
+            public void setTenantId(String tenantId) {
+                this.tenantId = tenantId;
+            }
+
+            public String getApiKey() {
+                return apiKey;
+            }
+
+            public void setApiKey(String apiKey) {
+                this.apiKey = apiKey;
+            }
+
+            public String getName() {
+                return name;
+            }
+
+            public void setName(String name) {
+                this.name = name;
+            }
+        }
+    }
+
+    public static class Session {
+        @Min(1)
+        @Max(128)
+        private int maxTranscriptMessages = 24;
+
+        @Min(256)
+        @Max(200000)
+        private int maxTranscriptChars = 24000;
+
+        @Min(60)
+        @Max(604800)
+        private int conversationTtlSeconds = 21600;
+
+        public int getMaxTranscriptMessages() {
+            return maxTranscriptMessages;
+        }
+
+        public void setMaxTranscriptMessages(int maxTranscriptMessages) {
+            this.maxTranscriptMessages = maxTranscriptMessages;
+        }
+
+        public int getMaxTranscriptChars() {
+            return maxTranscriptChars;
+        }
+
+        public void setMaxTranscriptChars(int maxTranscriptChars) {
+            this.maxTranscriptChars = maxTranscriptChars;
+        }
+
+        public int getConversationTtlSeconds() {
+            return conversationTtlSeconds;
+        }
+
+        public void setConversationTtlSeconds(int conversationTtlSeconds) {
+            this.conversationTtlSeconds = conversationTtlSeconds;
         }
     }
 

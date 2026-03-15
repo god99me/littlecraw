@@ -9,15 +9,18 @@ import ai.littleclaw.command.CommandRouter;
 import ai.littleclaw.config.LittleClawProperties;
 import ai.littleclaw.context.ContextAssembler;
 import ai.littleclaw.mcp.McpRegistry;
+import ai.littleclaw.observability.ChatMetrics;
 import ai.littleclaw.provider.StubChatProvider;
 import ai.littleclaw.rag.LocalFilesystemRagService;
 import ai.littleclaw.render.DefaultChannelResponseRenderer;
 import ai.littleclaw.render.RenderPolicyRegistry;
 import ai.littleclaw.session.ActiveRequestRegistry;
+import ai.littleclaw.session.ConversationTranscriptPolicy;
 import ai.littleclaw.session.InMemoryConversationStore;
 import ai.littleclaw.skill.SkillLoader;
 import ai.littleclaw.skill.SkillRegistry;
 import jakarta.validation.ValidationException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
@@ -41,19 +44,23 @@ class ChatServiceTest {
         properties.getStream().setTokenDelayMs(0);
         properties.getRag().getIncludePaths().clear();
         properties.getRag().getIncludePaths().add("src/main/resources/skills");
+        properties.getSession().setMaxTranscriptMessages(3);
+        properties.getSession().setMaxTranscriptChars(128);
         SkillRegistry registry = new SkillRegistry(new SkillLoader(), properties);
         registry.refresh();
+        ChatMetrics metrics = new ChatMetrics(new SimpleMeterRegistry());
         activeRequestRegistry = new ActiveRequestRegistry();
         chatService = new ChatService(
                 registry,
                 new HeuristicChatEngine(new StubChatProvider(properties)),
                 properties,
-                new InMemoryAdmissionController(properties),
+                new InMemoryAdmissionController(properties, metrics),
                 new ContextAssembler(new LocalFilesystemRagService(properties), new McpRegistry(properties), new ChannelRegistry()),
                 new CommandRouter(new CommandInterpreter(), activeRequestRegistry),
                 activeRequestRegistry,
-                new InMemoryConversationStore(),
-                new DefaultChannelResponseRenderer(new RenderPolicyRegistry())
+                new InMemoryConversationStore(new ConversationTranscriptPolicy(properties), properties, metrics),
+                new DefaultChannelResponseRenderer(new RenderPolicyRegistry()),
+                metrics
         );
         requestContext = new RequestContext("tenant-a", "ctx-req-1", "api");
     }
@@ -301,5 +308,41 @@ class ChatServiceTest {
                 .verifyComplete();
 
         org.assertj.core.api.Assertions.assertThat(activeRequestRegistry.isCancelled("req-cancelled")).isFalse();
+    }
+
+    @Test
+    void trimsContinuedConversationToConfiguredWindow() {
+        ChatRequest first = new ChatRequest(
+                ChatAction.COMPLETE,
+                List.of(new ChatMessage("user", "m1")),
+                false,
+                null,
+                null,
+                null,
+                "conv-trim-1",
+                "req-trim-1",
+                null,
+                null,
+                null
+        );
+        chatService.complete(first, requestContext).block();
+
+        ChatRequest second = new ChatRequest(
+                ChatAction.COMPLETE,
+                List.of(new ChatMessage("user", "m2")),
+                false,
+                null,
+                null,
+                null,
+                "conv-trim-1",
+                "req-trim-2",
+                null,
+                null,
+                null
+        );
+        ChatResponse secondResponse = chatService.complete(second, requestContext).block();
+
+        org.assertj.core.api.Assertions.assertThat(secondResponse.metadata()).containsEntry("continuedConversation", true);
+        org.assertj.core.api.Assertions.assertThat((Integer) secondResponse.metadata().get("messageCount")).isEqualTo(3);
     }
 }

@@ -10,14 +10,17 @@ import ai.littleclaw.command.CommandRouter;
 import ai.littleclaw.config.LittleClawProperties;
 import ai.littleclaw.context.ContextAssembler;
 import ai.littleclaw.mcp.McpRegistry;
+import ai.littleclaw.observability.ChatMetrics;
 import ai.littleclaw.provider.StubChatProvider;
 import ai.littleclaw.rag.LocalFilesystemRagService;
 import ai.littleclaw.render.DefaultChannelResponseRenderer;
 import ai.littleclaw.render.RenderPolicyRegistry;
 import ai.littleclaw.session.ActiveRequestRegistry;
+import ai.littleclaw.session.ConversationTranscriptPolicy;
 import ai.littleclaw.session.InMemoryConversationStore;
 import ai.littleclaw.skill.SkillLoader;
 import ai.littleclaw.skill.SkillRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -29,10 +32,11 @@ class ChatControllerTest {
 
     private WebTestClient client;
     private ActiveRequestRegistry activeRequestRegistry;
+    private LittleClawProperties properties;
 
     @BeforeEach
     void setUp() {
-        LittleClawProperties properties = new LittleClawProperties();
+        properties = new LittleClawProperties();
         properties.setSystemPrompt("test");
         properties.getSkills().setPath("src/main/resources/skills");
         properties.getStream().setTokenDelayMs(0);
@@ -41,21 +45,24 @@ class ChatControllerTest {
         properties.getRag().getIncludePaths().add("src/main/resources/skills");
         SkillRegistry registry = new SkillRegistry(new SkillLoader(), properties);
         registry.refresh();
+        ChatMetrics metrics = new ChatMetrics(new SimpleMeterRegistry());
         activeRequestRegistry = new ActiveRequestRegistry();
         ChatService chatService = new ChatService(
                 registry,
                 new HeuristicChatEngine(new StubChatProvider(properties)),
                 properties,
-                new InMemoryAdmissionController(properties),
+                new InMemoryAdmissionController(properties, metrics),
                 new ContextAssembler(new LocalFilesystemRagService(properties), new McpRegistry(properties), new ChannelRegistry()),
                 new CommandRouter(new CommandInterpreter(), activeRequestRegistry),
                 activeRequestRegistry,
-                new InMemoryConversationStore(),
-                new DefaultChannelResponseRenderer(new RenderPolicyRegistry())
+                new InMemoryConversationStore(new ConversationTranscriptPolicy(properties), properties, metrics),
+                new DefaultChannelResponseRenderer(new RenderPolicyRegistry()),
+                metrics
         );
         client = WebTestClient.bindToController(new ChatController(chatService, registry, activeRequestRegistry))
+                .webFilter(new AuthFilter(properties, metrics))
                 .webFilter(new RequestContextFilter())
-                .controllerAdvice(new GlobalExceptionHandler())
+                .controllerAdvice(new GlobalExceptionHandler(metrics))
                 .build();
     }
 
@@ -160,5 +167,41 @@ class ChatControllerTest {
                 .expectStatus().isOk()
                 .expectBody()
                 .jsonPath("$.content").value(value -> org.assertj.core.api.Assertions.assertThat(String.valueOf(value)).contains("Built-in commands"));
+    }
+
+    @Test
+    void rejectsMissingApiKeyWhenAuthEnabled() {
+        properties.getAuth().setEnabled(true);
+        Map<String, Object> payload = Map.of(
+                "action", ChatAction.COMPLETE.name(),
+                "messages", List.of(Map.of("role", "user", "content", "Need Java code help"))
+        );
+        client.post()
+                .uri("/v1/chat/completions")
+                .bodyValue(payload)
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void bindsTenantFromConfiguredApiKey() {
+        properties.getAuth().setEnabled(true);
+        LittleClawProperties.Auth.Client clientConfig = new LittleClawProperties.Auth.Client();
+        clientConfig.setTenantId("tenant-gold");
+        clientConfig.setApiKey("secret-gold-key");
+        clientConfig.setName("gold");
+        properties.getAuth().getClients().add(clientConfig);
+        Map<String, Object> payload = Map.of(
+                "action", ChatAction.COMPLETE.name(),
+                "messages", List.of(Map.of("role", "user", "content", "Need Java code help"))
+        );
+        client.post()
+                .uri("/v1/chat/completions")
+                .header("X-API-Key", "secret-gold-key")
+                .bodyValue(payload)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.requestId").exists();
     }
 }
